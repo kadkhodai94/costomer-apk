@@ -1,0 +1,139 @@
+name: Build Flutter APK from ZIP
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    name: Unzip project and build APK
+    runs-on: ubuntu-latest
+
+    env:
+      # اگر اسم فایل زیپت فرق داشت، همین خط را عوض کن
+      ZIP_NAME: customer_account_flutter_project.zip
+      FLUTTER_VERSION: "3.24.5"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find ZIP file
+        id: find_zip
+        shell: bash
+        run: |
+          set -e
+
+          if [ -f "$ZIP_NAME" ]; then
+            ZIP_PATH="$ZIP_NAME"
+          else
+            ZIP_PATH="$(find . -maxdepth 3 -type f -name '*.zip' | head -n 1 || true)"
+          fi
+
+          if [ -z "$ZIP_PATH" ]; then
+            echo "No ZIP file found. Put your Flutter project ZIP in the repository root."
+            exit 1
+          fi
+
+          echo "ZIP found: $ZIP_PATH"
+          echo "zip_path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Unzip Flutter project
+        shell: bash
+        run: |
+          set -e
+          rm -rf extracted_project
+          mkdir -p extracted_project
+          unzip -q "${{ steps.find_zip.outputs.zip_path }}" -d extracted_project
+          echo "ZIP extracted."
+          find extracted_project -maxdepth 3 -type f -name "pubspec.yaml" -print
+
+      - name: Detect Flutter project directory
+        id: project_dir
+        shell: bash
+        run: |
+          set -e
+
+          PUBSPEC_PATH="$(find extracted_project -maxdepth 5 -type f -name 'pubspec.yaml' | head -n 1 || true)"
+
+          if [ -z "$PUBSPEC_PATH" ]; then
+            echo "pubspec.yaml not found inside ZIP. Make sure the ZIP contains a Flutter project."
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$PUBSPEC_PATH")"
+
+          echo "Flutter project directory: $PROJECT_DIR"
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Flutter doctor
+        shell: bash
+        working-directory: ${{ steps.project_dir.outputs.dir }}
+        run: flutter doctor -v
+
+      - name: Generate Android folder if missing
+        shell: bash
+        working-directory: ${{ steps.project_dir.outputs.dir }}
+        run: |
+          set -e
+          if [ ! -d "android" ]; then
+            echo "Android folder not found. Running flutter create..."
+            flutter create --platforms=android .
+          else
+            echo "Android folder exists."
+          fi
+
+      - name: Get dependencies
+        shell: bash
+        working-directory: ${{ steps.project_dir.outputs.dir }}
+        run: flutter pub get
+
+      - name: Build release APK
+        shell: bash
+        working-directory: ${{ steps.project_dir.outputs.dir }}
+        run: flutter build apk --release
+
+      - name: Rename APK
+        shell: bash
+        working-directory: ${{ steps.project_dir.outputs.dir }}
+        run: |
+          set -e
+          mkdir -p release-output
+
+          APK_PATH="build/app/outputs/flutter-apk/app-release.apk"
+
+          if [ ! -f "$APK_PATH" ]; then
+            echo "APK was not created at $APK_PATH"
+            find build -type f -name "*.apk" -print
+            exit 1
+          fi
+
+          cp "$APK_PATH" "release-output/customer-account-app-release.apk"
+          ls -lh release-output
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: customer-account-apk
+          path: ${{ steps.project_dir.outputs.dir }}/release-output/customer-account-app-release.apk
+          if-no-files-found: error
+          retention-days: 30
